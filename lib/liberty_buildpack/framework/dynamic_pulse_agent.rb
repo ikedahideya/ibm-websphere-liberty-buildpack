@@ -24,6 +24,7 @@ require 'liberty_buildpack/container/common_paths'
 require 'liberty_buildpack/services/vcap_services'
 require 'pathname'
 require 'fileutils'
+require 'rexml/document'
 
 module LibertyBuildpack::Framework
 
@@ -41,32 +42,43 @@ module LibertyBuildpack::Framework
     def initialize(context = {})
       @logger = LibertyBuildpack::Diagnostics::LoggerFactory.get_logger
       @app_dir = context[:app_dir]
-      @environment = context[:environment]
       @java_opts = context[:java_opts]
       @lib_directory = context[:lib_directory]
     end
 
-    DP_URL = 'DP_URL'.freeze
-
     # Detects whether DynamicPULSE Agent can attach
     #
-    # @return [String, nil] returns +DynamicPULSE+ if DynamicPULSE Agent can attach otherwise returns +nil+
+    # @return [String, nil] returns DynamicPULSE-2.+ if DynamicPULSE Agent can attach otherwise returns +nil+
     def detect
-      return 'DynamicPULSE' if @environment.has_key?(DP_URL)
-      nil
+      dynamicpulse_remote_xml = File.join(@app_dir, 'WEB-INF/dynamicpulse-remote.xml')
+      if File.exists?(dynamicpulse_remote_xml) then
+        doc = REXML::Document.new(open(dynamicpulse_remote_xml))
+        @url = doc.elements['dynamicpulse-remote/centerUrl'].text
+        @systemId = doc.elements['dynamicpulse-remote/systemId'].text
+
+        @logger.debug("url=#{@url}")
+        @logger.debug("systemId=#{@systemId}")
+
+        return "DynamicPULSE-2.+"
+      else
+        nil
+      end
     end
 
     # Downloads and places the DynamicPULSE JARs
     #
     # @return [void]
     def compile
-      dp_url = @environment[DP_URL]
-      dp_home = File.join(@app_dir, ".dynamic_pulse_agent")
+      if @url.nil? || @systemId.nil? then
+        raise "url #{@url}, or systemId #{@systemId} is not available, detect needs to be invoked"
+      end
+
+      dp_home = File.join(@app_dir, '.dynamic_pulse_agent')
       FileUtils.mkdir_p(dp_home)
 
-      download_jar(dp_url, "dynamicpulse.jar", @lib_directory)
-      download_jar(dp_url, "aspectjweaver.jar", dp_home)
+      download_and_unzip(@url, @systemId, 'dynamicpulse-agent.zip', dp_home)
 
+      FileUtils.mv(File.join(dp_home, "dynamicpulse.jar"), @lib_directory)
       FrameworkUtils.link_libs([@app_dir], @lib_directory)
     end
 
@@ -78,16 +90,17 @@ module LibertyBuildpack::Framework
       @java_opts << "-Dorg.aspectj.tracing.factory=default"
     end
 
-    # Downloads a JAR file from specified url
-    def download_jar(dp_url, basename, save_to_dir)
-      version = LibertyBuildpack::Util::TokenizedVersion.new("1.+")
+    # Downloads ZIP file from specified url
+    def download_and_unzip(base_url, systemId, filename, save_to_dir)
+      download_url = File.join(base_url, systemId, filename)
       begin
-        LibertyBuildpack::Util.download(version, dp_url + basename, "download jar", basename, save_to_dir)
+        LibertyBuildpack::Util.download('2.+', download_url, 'DynamicPULSE Agent', filename, save_to_dir)
       rescue
-        @logger.error("[DynamicPULSE] Can't download #{basename} from #{dp_url}. Please check your DP_URL environment variable.");
+        @logger.error("[DynamicPULSE] Can't download #{filename} from #{download_url}. Please check dynamicpulse-remote.xml.");
         raise
       end
+      LibertyBuildpack::Container::ContainerUtils.unzip(File.join(save_to_dir, filename), save_to_dir)
     end
+
   end
 end
-
