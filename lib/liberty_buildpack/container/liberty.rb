@@ -109,17 +109,20 @@ module LibertyBuildpack::Container
     #
     # @return [String] the command to run the application.
     def release
+      jvm_options
+
       server_dir = ' wlp/usr/servers/' << server_name << '/'
       runtime_vars_file =  server_dir + 'runtime-vars.xml'
       create_vars_string = File.join(LIBERTY_HOME, 'create_vars.rb') << runtime_vars_file << ' &&'
+      skip_maxpermsize_string = ContainerUtils.space('WLP_SKIP_MAXPERMSIZE=true')
       java_home_string = ContainerUtils.space("JAVA_HOME=\"$PWD/#{@java_home}\"")
       wlp_user_dir_string = ContainerUtils.space('WLP_USER_DIR="$PWD/wlp/usr"')
-      start_script_string = ContainerUtils.space(File.join(LIBERTY_HOME, 'bin', 'server'))
-      start_script_string << ContainerUtils.space('run')
-      jvm_options
-      server_name_string = ContainerUtils.space(server_name)
+      server_script_string = ContainerUtils.space(File.join(LIBERTY_HOME, 'bin', 'server'))
+
+      start_command = "#{create_vars_string}#{skip_maxpermsize_string}#{java_home_string}#{wlp_user_dir_string}#{server_script_string} run #{server_name}"
       move_app
-      "#{create_vars_string}#{java_home_string}#{wlp_user_dir_string}#{start_script_string}#{server_name_string}"
+
+      start_command
     end
 
     private
@@ -356,6 +359,11 @@ module LibertyBuildpack::Container
       application.attributes['type'] = myapp_type
       application.attributes['context-root'] = get_context_root || '/'
 
+      # configure CDI 1.2 implicit bean archive scanning
+      cdi = REXML::Element.new('cdi12', server_xml_doc.root)
+      scan = default_config.nil? || default_config['implicit_cdi'].nil? ? false : default_config['implicit_cdi']
+      cdi.add_attribute('enableImplicitBeanArchives', scan)
+
       # add common settings
       update_server_xml_common(server_xml_doc, true)
 
@@ -378,7 +386,7 @@ module LibertyBuildpack::Container
       disable_config_monitoring(server_xml_doc)
 
       # Check if appstate ICAP feature can be used
-      add_droplet_yaml if File.file?(icap_extension) && check_appstate_feature(server_xml_doc)
+      add_droplet_yaml if appstate_enabled? && check_appstate_feature(server_xml_doc)
 
       # update config for services
       @services_manager.update_configuration(server_xml_doc, create, current_server_dir)
@@ -461,6 +469,12 @@ module LibertyBuildpack::Container
       dispatcher.add_attribute('enableWelcomePage', 'false')
     end
 
+    def appstate_enabled?
+      config_enabled = @configuration['app_state'].nil? || @configuration['app_state']
+      feature_present = File.file?(icap_extension)
+      config_enabled && feature_present
+    end
+
     def check_appstate_feature(server_xml_doc)
       # Currently appstate can work only with one application
       apps = REXML::XPath.match(server_xml_doc, '/server/application | /server/webApplication | /server/enterpriseApplication')
@@ -492,13 +506,10 @@ module LibertyBuildpack::Container
     end
 
     def make_server_script_runnable
-      server_script = File.join liberty_home, 'bin', 'server'
-      File.chmod(0755, server_script)
-      # scripts that need to be executable for the feature manager to work
-      feature_manager_script = File.join liberty_home, 'bin', 'featureManager'
-      File.chmod(0755, feature_manager_script)
-      product_info = File.join liberty_home, 'bin', 'productInfo'
-      File.chmod(0755, product_info)
+      %w{server featureManager productInfo installUtility}.each do | name |
+        script = File.join(liberty_home, 'bin', name)
+        File.chmod(0755, script) if File.exists?(script)
+      end
     end
 
     def server_name
@@ -569,7 +580,7 @@ module LibertyBuildpack::Container
     end
 
     def list_configured_features_from_component(component)
-      features_xpath = OptionalComponents::COMPONENT_NAME_TO_FEATURE_XPATH[component]
+      features_xpath = OptionalComponents.feature_xpath(component)
       if !features_xpath
         # no such component
         []
@@ -579,7 +590,7 @@ module LibertyBuildpack::Container
         REXML::XPath.match(server_xml_doc, features_xpath)
       else
         # no server.xml supplied, so check default features.
-        feature_names = OptionalComponents::COMPONENT_NAME_TO_FEATURE_NAMES[component]
+        feature_names = OptionalComponents.feature_names(component)
 
         default_config = @configuration['app_archive']
         default_features = default_config.nil? ? [] : default_config['features'] || []
@@ -714,7 +725,7 @@ module LibertyBuildpack::Container
     def self.find_liberty_files(app_dir, configuration)
       config_uri, license = Liberty.find_liberty_item(app_dir, configuration).drop(1)
       # Back to the future. Temporary hack to handle all-in-one liberty core for open source buildpack while the repository is being restructured.
-      if config_uri.end_with?('.jar')
+      if config_uri.end_with?('.jar') || config_uri.end_with?('.zip')
         components_and_uris = { COMPONENT_LIBERTY_CORE => config_uri }
       else
         components_and_uris = LibertyBuildpack::Repository::ComponentIndex.new(config_uri).components
@@ -729,15 +740,30 @@ module LibertyBuildpack::Container
     # Returns the version, artifact uri, and license of the requested item in the index file
     def self.find_liberty_item(app_dir, configuration)
       if server_xml(app_dir) || web_inf(app_dir) || meta_inf(app_dir)
-        version, config_uri, license = LibertyBuildpack::Repository::ConfiguredItem.find_item(configuration) do |candidate_version|
+        version, entry = LibertyBuildpack::Repository::ConfiguredItem.find_item(configuration) do |candidate_version|
           fail "Malformed Liberty version #{candidate_version}: too many version components" if candidate_version[4]
         end
+        if entry.is_a?(Hash)
+          type = runtime_type(configuration)
+          fail "Runtime type not supported: #{type}" if entry[type].nil?
+          return version, entry[type], entry['license']
+        else
+          return version, entry, nil
+        end
       else
-        version = config_uri = nil
+        return nil, nil, nil
       end
-      return version, config_uri, license
     rescue => e
       raise RuntimeError, "Liberty container error: #{e.message}", e.backtrace
+    end
+
+    def self.runtime_type(configuration)
+      type = configuration['type']
+      if type.nil? || type.casecmp('webProfile6') == 0
+        'uri'
+      else
+        type
+      end
     end
 
     def liberty_type

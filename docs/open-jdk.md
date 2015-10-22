@@ -1,5 +1,5 @@
-# Open JDK
-The Open JDK provides Java runtimes from the [OpenJDK][] project. Versions of Java from the `1.6`, `1.7`, and `1.8` lines are available. The IBM JDK is the default used with Liberty profile. However, if you would prefer to use the Open JDK then set the `JVM` environment variable to `openjdk`. For example, add the following to your *manifest.yml* file:
+# OpenJDK JRE
+The OpenJDK JRE provides Java runtimes from the [OpenJDK][] project. The OpenJDK JRE must be explicitly enabled to be used by the Liberty buildpack. To enable OpenJDK JRE set the `JVM` environment variable to `openjdk`. For example, add the following to your *manifest.yml* file:
 
 ```bash
 ---
@@ -7,7 +7,9 @@ env:
   JVM: openjdk
 ```
 
-If you are interested in using the IBM JDK please read [IBM JDK](ibm-jdk.md).
+Unless otherwise configured, the version of OpenJDK JRE that will be used is specified in the [`config/openjdk.yml`][] file. Versions of Java from the `1.6`, `1.7`, and `1.8` lines are available.
+
+The Liberty buildpack uses the [IBM JRE](ibm-jdk.md) by default.
 
 ## Configuration
 
@@ -15,8 +17,8 @@ The JRE can be configured by modifying the [`config/openjdk.yml`][] file in the 
 
 | Name | Description
 | ---- | -----------
-| `memory_sizes` | Optional memory sizes, described below under "Memory Sizes".
-| `memory_heuristics` | Default memory size weightings, described below under "Memory Weightings.
+| `memory_sizes` | Optional memory sizes, described below under [Memory Sizes](#memory-sizes).
+| `memory_heuristics` | Default memory size weightings, described below under [Memory Weightings](#memory-weightings).
 | `repository_root` | The URL of the OpenJDK repository index ([details][repositories]).
 | `version` | The version of Java runtime to use.  Candidate versions can be found in the listings for [centos6][], [lucid][], [mountainlion][], and [precise][]. Note: version 1.8.0 and higher require the `memory_sizes` and `memory_heuristics` mappings to specify `metaspace` rather than `permgen`.
 
@@ -66,6 +68,24 @@ The total available memory is allocated to each memory type in proportion to its
 the range, the constrained size is excluded from the remaining memory, and no further calculation is required for the memory type. If the resultant size of a memory size lies within its range, the size is included in the remaining memory. The remaining memory is then allocated to the remaining memory types in a similar fashion. Allocation terminates when none of the sizes of the remaining memory types is constrained by the corresponding range.
 
 Termination is guaranteed since there is a finite number of memory types and in each iteration either none of the remaining memory sizes is constrained by the corresponding range and allocation terminates or at least one memory size is constrained by the corresponding range and is omitted from the next iteration.
+
+## Common Configuration Overrides
+
+The OpenJDK JRE [configuration can be overridden](configuration.md) with the `JBP_CONFIG_OPENJDK` environment variable. The value of the variable should be valid inline YAML. For example:
+
+1. Configure larger metaspace size:
+
+   ```bash
+   $ cf set-env myApplication JBP_CONFIG_OPENJDK 'memory_sizes: { metaspace: 256m }'
+   ```
+
+1. Use OpenJDK version 7:
+
+   ```bash
+   $ cf set-env myApplication JBP_CONFIG_OPENJDK 'version: 1.7.+'
+   ```
+
+The environment variables can also be specified in the [manifest.yml](http://docs.cloudfoundry.org/devguide/deploy-apps/manifest.html) file.
 
 [`config/openjdk.yml`]: ../config/openjdk.yml
 [centos6]: http://download.pivotal.io.s3.amazonaws.com/openjdk/centos6/x86_64/index.yml

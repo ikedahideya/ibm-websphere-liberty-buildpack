@@ -1,5 +1,5 @@
-# IBM JDK
-The IBM JDK is the default used with Liberty profile. You do not need to change the `manifest.yml` file or configure anything else to use the IBM JDK. The behavior is the same as setting the `JVM` environment variable to `ibmjdk`. For example, using the `manifest.yml` file:
+# IBM JRE
+The IBM JRE is the default JRE used by the Liberty buildpack. Unless otherwise configured, the version of IBM JRE that will be used is specified in the [`config/ibmjdk.yml`][] file. If necessary, the IBM JRE can also be explicitly enabled by setting the `JVM` environment variable to `ibmjdk`. For example, using the `manifest.yml` file:
 
 ```bash
 ---
@@ -7,7 +7,7 @@ env:
   JVM: ibmjdk
 ```
 
-If you would prefer to use the Open JDK then please read [Open JDK](open-jdk.md).
+The Liberty buildpack also supports [OpenJDK](open-jdk.md) as an alternative Java runtime.
 
 ## Configuration
 
@@ -17,6 +17,23 @@ The JRE can be configured by modifying the [`config/ibmjdk.yml`][] file in the b
 | ---- | -----------
 | `repository_root` | The URL of the IBM JRE repository index ([details][repositories]).
 | `version` | The version of Java runtime to use.  Candidate versions can be found [here][index.yml].
+| `heap_size_ratio` | The ratio that is used to calculate the maximum heap size. The default heap size ratio is `0.75` (75% of the total available memory).
+
+## Common Configuration Overrides
+
+The IBM JRE [configuration can be overridden](configuration.md) with the `JBP_CONFIG_IBMJDK` environment variable. The value of the variable should be valid inline YAML. For example:
+
+1. Adjust heap size ratio:
+
+   ```bash
+   $ cf set-env myApplication JBP_CONFIG_IBMJDK 'heap_size_ratio: 0.90'
+   ```
+
+1. Use IBM JRE version 7:
+
+   ```bash
+   $ cf set-env myApplication JBP_CONFIG_IBMJDK 'version: 1.7.+'
+   ```
 
 [`config/ibmjdk.yml`]: ../config/ibmjdk.yml
 [index.yml]: http://public.dhe.ibm.com/ibmdl/export/pub/software/websphere/wasdev/downloads/jre/index.yml

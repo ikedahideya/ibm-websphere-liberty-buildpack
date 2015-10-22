@@ -27,7 +27,8 @@ module LibertyBuildpack::Container
 
     LIBERTY_VERSION = LibertyBuildpack::Util::TokenizedVersion.new('8.5.5')
     LIBERTY_SINGLE_DOWNLOAD_URI = 'test-liberty-uri.tar.gz'.freeze # end of URI (here ".tar.gz") is significant in liberty container code
-    LIBERTY_DETAILS = [LIBERTY_VERSION, LIBERTY_SINGLE_DOWNLOAD_URI, 'spec/fixtures/license.html']
+    LIBERTY_WEBPROFILE7_DOWNLOAD_URI = 'test-liberty-webProfile7.tar.gz'.freeze
+    LIBERTY_DETAILS = [LIBERTY_VERSION, { 'uri' => LIBERTY_SINGLE_DOWNLOAD_URI, 'license' => 'spec/fixtures/license.html', 'webProfile7' => LIBERTY_WEBPROFILE7_DOWNLOAD_URI }]
     DISABLE_2PC_JAVA_OPT_REGEX = '-Dcom.ibm.tx.jta.disable2PC=true'.freeze
 
     let(:application_cache) { double('ApplicationCache') }
@@ -47,6 +48,7 @@ module LibertyBuildpack::Container
       configuration = YAML.load_file(File.expand_path('../../../config/liberty.yml', File.dirname(__FILE__)))
       configuration['liberty_repository_properties']['useRepository'] = false
       configuration['app_archive']['features'] = ['websocket-1.0', 'servlet-3.1']
+      configuration['app_archive']['implicit_cdi'] = true
       configuration
     end
 
@@ -70,7 +72,7 @@ module LibertyBuildpack::Container
       application_cache.stub(:get).with(LIBERTY_SINGLE_DOWNLOAD_URI).and_yield(File.open(fixture))
     end
 
-    def check_default_config(server_xml_file, expected_type, expected_context_root, expected_features) # rubocop:disable MethodLength
+    def check_default_config(server_xml_file, expected_type, expected_context_root, expected_features, expected_implicit_cdi = 'false') # rubocop:disable MethodLength
       expect(File.exists?(server_xml_file)).to eq(true)
 
       server_xml_doc = LibertyBuildpack::Util::XmlUtils.read_xml_file(server_xml_file)
@@ -103,6 +105,10 @@ module LibertyBuildpack::Container
       expect(logging).not_to be_nil
       expect(logging.attributes['logDirectory']).to eq('${application.log.dir}')
       expect(logging.attributes['consoleLogLevel']).to eq('INFO')
+
+      cdi = server_xml_doc.elements['/server/cdi12']
+      expect(cdi).not_to be_nil
+      expect(cdi.attributes['enableImplicitBeanArchives']).to eq(expected_implicit_cdi)
 
       features = REXML::XPath.match(server_xml_doc, '/server/featureManager/feature/text()[not(contains(., ":"))]')
       expected_features.each do | expected_feature |
@@ -344,6 +350,24 @@ module LibertyBuildpack::Container
         end
       end
 
+      it 'should fail if license id is not provided' do
+        Dir.mktmpdir do |root|
+          Dir.mkdir File.join(root, 'WEB-INF')
+
+          set_liberty_fixture('spec/fixtures/wlp-stub.tar.gz')
+
+          expect do
+            Liberty.new(
+              app_dir: root,
+              lib_directory: '',
+              configuration: {},
+              environment: {},
+              license_ids: {}
+            ).compile
+          end.to raise_error(RuntimeError, '')
+        end
+      end
+
       it 'should fail if license ids do not match' do
         Dir.mktmpdir do |root|
           Dir.mkdir File.join(root, 'WEB-INF')
@@ -359,6 +383,30 @@ module LibertyBuildpack::Container
               license_ids: { 'IBM_LIBERTY_LICENSE' => 'Incorrect' }
             ).compile
           end.to raise_error(RuntimeError, '')
+        end
+      end
+
+      it 'should not fail when the license url is not provided' do
+        Dir.mktmpdir do |root|
+          Dir.mkdir File.join(root, 'WEB-INF')
+
+          set_liberty_fixture('spec/fixtures/wlp-stub.tar.gz')
+
+          test_details = [LIBERTY_VERSION, { 'uri' => LIBERTY_SINGLE_DOWNLOAD_URI, 'webProfile7' => LIBERTY_WEBPROFILE7_DOWNLOAD_URI }]
+          LibertyBuildpack::Repository::ConfiguredItem.stub(:find_item) { |&block| block.call(LIBERTY_VERSION) if block }
+            .and_return(test_details)
+
+          Liberty.new(
+              app_dir: root,
+              lib_directory: '',
+              configuration: {},
+              environment: {},
+              license_ids: {}
+          ).compile
+
+          liberty_dir = File.join root, '.liberty'
+          bin_dir = File.join liberty_dir, 'bin'
+          expect(File.exists?(File.join bin_dir, 'server')).to eq(true)
         end
       end
 
@@ -469,7 +517,7 @@ module LibertyBuildpack::Container
         Dir.mktmpdir do |root|
           Dir.mkdir File.join(root, 'WEB-INF')
 
-          LIBERTY_OS_DETAILS = [LIBERTY_VERSION, 'wlp-developers.jar', 'spec/fixtures/license.html']
+          LIBERTY_OS_DETAILS = [LIBERTY_VERSION, { 'uri' => 'wlp-developers.jar', 'license' => 'spec/fixtures/license.html' }]
 
           LibertyBuildpack::Repository::ConfiguredItem.stub(:find_item) { |&block| block.call(LIBERTY_VERSION) if block }
           .and_return(LIBERTY_OS_DETAILS)
@@ -513,7 +561,7 @@ module LibertyBuildpack::Container
             file.write('test file that should still exist after overlay')
           end
 
-          LIBERTY_OS_DETAILS = [LIBERTY_VERSION, 'wlp-developers.jar', 'spec/fixtures/license.html']
+          LIBERTY_OS_DETAILS = [LIBERTY_VERSION, { 'uri' => 'wlp-developers.jar', 'license' => 'spec/fixtures/license.html' }]
 
           LibertyBuildpack::Repository::ConfiguredItem.stub(:find_item) { |&block| block.call(LIBERTY_VERSION) if block }
            .and_return(LIBERTY_OS_DETAILS)
@@ -549,7 +597,7 @@ module LibertyBuildpack::Container
             file.write('test file that should still exist after overlay')
           end
 
-          LIBERTY_OS_DETAILS = [LIBERTY_VERSION, 'wlp-developers.jar', 'spec/fixtures/license.html']
+          LIBERTY_OS_DETAILS = [LIBERTY_VERSION, { 'uri' => 'wlp-developers.jar', 'license' => 'spec/fixtures/license.html' }]
 
           LibertyBuildpack::Repository::ConfiguredItem.stub(:find_item) { |&block| block.call(LIBERTY_VERSION) if block }
            .and_return(LIBERTY_OS_DETAILS)
@@ -685,7 +733,7 @@ module LibertyBuildpack::Container
           license_ids: { 'IBM_LIBERTY_LICENSE' => '1234-ABCD' }
           ).compile
           server_xml_file = File.join root, '.liberty', 'usr', 'servers', 'defaultServer', 'server.xml'
-          check_default_config(server_xml_file, 'war', '/', custom_features)
+          check_default_config(server_xml_file, 'war', '/', custom_features, 'true')
         end
       end
 
@@ -775,7 +823,7 @@ module LibertyBuildpack::Container
           license_ids: { 'IBM_LIBERTY_LICENSE' => '1234-ABCD' }
           ).compile
           server_xml_file = File.join root, '.liberty', 'usr', 'servers', 'defaultServer', 'server.xml'
-          check_default_config(server_xml_file, 'ear', '/', custom_features)
+          check_default_config(server_xml_file, 'ear', '/', custom_features, 'true')
         end
       end
 
@@ -1261,7 +1309,7 @@ module LibertyBuildpack::Container
 
     context 'droplet.yaml' do
 
-      def generate(root, xml)
+      def generate(root, xml, configuration)
         FileUtils.mkdir_p File.join(root, 'wlp', 'usr', 'servers', 'myServer')
         File.open(File.join(root, 'wlp', 'usr', 'servers', 'myServer', 'server.xml'), 'w') do |file|
           file.write("<server><httpEndpoint id=\"defaultHttpEndpoint\" host=\"localhost\" httpPort=\"9080\" httpsPort=\"9443\" />#{xml}</server>")
@@ -1271,18 +1319,18 @@ module LibertyBuildpack::Container
 
         Liberty.new(
             app_dir: root,
-            configuration: {},
+            configuration: configuration,
             environment: {},
             license_ids: { 'IBM_LIBERTY_LICENSE' => '1234-ABCD' }
         ).compile
       end
 
-      def check_appstate(app_xml, app_name)
+      def check_appstate(app_xml, app_name, configuration = default_configuration)
         Dir.mktmpdir do |root|
           droplet_yaml_file = File.join root, 'droplet.yaml'
           root = File.join(root, 'app')
 
-          generate(root, app_xml)
+          generate(root, app_xml, configuration)
 
           liberty_directory = File.join root, '.liberty'
           expect(Dir.exists?(liberty_directory)).to eq(true)
@@ -1298,12 +1346,12 @@ module LibertyBuildpack::Container
         end
       end
 
-      def check_no_appstate(app_xml)
+      def check_no_appstate(app_xml, configuration = default_configuration)
         Dir.mktmpdir do |root|
           droplet_yaml_file = File.join root, 'droplet.yaml'
           root = File.join(root, 'app')
 
-          generate(root, app_xml)
+          generate(root, app_xml, configuration)
 
           liberty_directory = File.join root, '.liberty'
           expect(Dir.exists?(liberty_directory)).to eq(true)
@@ -1349,6 +1397,12 @@ module LibertyBuildpack::Container
 
       it 'should NOT add droplet.yaml when server xml contains two different application types' do
         check_no_appstate("<application name=\"foo\" /><webApplication name=\"fooWar\" />")
+      end
+
+      it 'should NOT add droplet.yaml when server xml contains one application and appstate is disabled' do
+        configuration = default_configuration
+        configuration['app_state'] = false
+        check_no_appstate("<application name=\"myapp\" />", configuration)
       end
 
     end
@@ -1521,7 +1575,7 @@ module LibertyBuildpack::Container
             license_ids: {}
           ).release
 
-          expect(command).to eq(".liberty/create_vars.rb wlp/usr/servers/defaultServer/runtime-vars.xml && JAVA_HOME=\"$PWD/#{test_java_home}\" WLP_USER_DIR=\"$PWD/wlp/usr\" .liberty/bin/server run defaultServer")
+          expect(command).to eq(".liberty/create_vars.rb wlp/usr/servers/defaultServer/runtime-vars.xml && WLP_SKIP_MAXPERMSIZE=true JAVA_HOME=\"$PWD/#{test_java_home}\" WLP_USER_DIR=\"$PWD/wlp/usr\" .liberty/bin/server run defaultServer")
         end
       end
 
@@ -1539,7 +1593,7 @@ module LibertyBuildpack::Container
             license_ids: {}
           ).release
 
-          expect(command).to eq(".liberty/create_vars.rb wlp/usr/servers/defaultServer/runtime-vars.xml && JAVA_HOME=\"$PWD/#{test_java_home}\" WLP_USER_DIR=\"$PWD/wlp/usr\" .liberty/bin/server run defaultServer")
+          expect(command).to eq(".liberty/create_vars.rb wlp/usr/servers/defaultServer/runtime-vars.xml && WLP_SKIP_MAXPERMSIZE=true JAVA_HOME=\"$PWD/#{test_java_home}\" WLP_USER_DIR=\"$PWD/wlp/usr\" .liberty/bin/server run defaultServer")
         end
       end
 
@@ -1557,7 +1611,7 @@ module LibertyBuildpack::Container
             license_ids: {}
           ).release
 
-          expect(command).to eq(".liberty/create_vars.rb wlp/usr/servers/myServer/runtime-vars.xml && JAVA_HOME=\"$PWD/#{test_java_home}\" WLP_USER_DIR=\"$PWD/wlp/usr\" .liberty/bin/server run myServer")
+          expect(command).to eq(".liberty/create_vars.rb wlp/usr/servers/myServer/runtime-vars.xml && WLP_SKIP_MAXPERMSIZE=true JAVA_HOME=\"$PWD/#{test_java_home}\" WLP_USER_DIR=\"$PWD/wlp/usr\" .liberty/bin/server run myServer")
         end
       end
 
@@ -1575,7 +1629,7 @@ module LibertyBuildpack::Container
             license_ids: {}
           ).release
 
-          expect(command).to eq(".liberty/create_vars.rb wlp/usr/servers/defaultServer/runtime-vars.xml && JAVA_HOME=\"$PWD/#{test_java_home}\" WLP_USER_DIR=\"$PWD/wlp/usr\" .liberty/bin/server run defaultServer")
+          expect(command).to eq(".liberty/create_vars.rb wlp/usr/servers/defaultServer/runtime-vars.xml && WLP_SKIP_MAXPERMSIZE=true JAVA_HOME=\"$PWD/#{test_java_home}\" WLP_USER_DIR=\"$PWD/wlp/usr\" .liberty/bin/server run defaultServer")
         end
       end
 
@@ -1856,6 +1910,57 @@ module LibertyBuildpack::Container
 
     end
 
-  end
+    describe 'runtime type' do
+      def run(root, configuration = default_configuration)
+        details = [LIBERTY_VERSION, { 'uri' => LIBERTY_SINGLE_DOWNLOAD_URI, 'license' => 'spec/fixtures/license.html', 'javaee7' => 'javaee7.zip' }]
 
+        LibertyBuildpack::Repository::ConfiguredItem.stub(:find_item) { |&block| block.call(LIBERTY_VERSION) if block }
+          .and_return(details)
+
+        LibertyBuildpack::Repository::ComponentIndex.stub(:new).and_return(component_index)
+        component_index.stub(:components).and_return({ 'liberty_core' => LIBERTY_SINGLE_DOWNLOAD_URI })
+
+        LibertyBuildpack::Util::Cache::ApplicationCache.stub(:new).and_return(application_cache)
+        application_cache.stub(:get).with(LIBERTY_SINGLE_DOWNLOAD_URI).and_yield(File.open('spec/fixtures/wlp-stub.tar.gz'))
+        application_cache.stub(:get).with('javaee7.zip').and_yield(File.open('spec/fixtures/wlp-stub.jar'))
+
+        Liberty.new(
+          app_dir: root,
+          configuration: configuration,
+          environment: {},
+          license_ids: { 'IBM_LIBERTY_LICENSE' => '1234-ABCD' }
+        ).compile
+      end
+
+      it 'should get webProfile6 runtime' do
+        Dir.mktmpdir do |root|
+          root = File.join(root, 'app')
+          FileUtils.mkdir_p File.join(root, 'WEB-INF')
+
+          configuration = default_configuration
+          configuration['type'] = 'webProfile6'
+          run(root, configuration)
+
+          file = File.join root, '.liberty', 'etc', 'extensions', 'icap.properties'
+          expect(File).to exist(file)
+        end
+      end
+
+      it 'should get javaee7 runtime' do
+        Dir.mktmpdir do |root|
+          root = File.join(root, 'app')
+          FileUtils.mkdir_p File.join(root, 'WEB-INF')
+
+          configuration = default_configuration
+          configuration['type'] = 'javaee7'
+          run(root, configuration)
+
+          file = File.join root, '.liberty', 'etc', 'extensions', 'icap.properties'
+          expect(File).not_to exist(file)
+        end
+      end
+
+    end
+
+  end
 end

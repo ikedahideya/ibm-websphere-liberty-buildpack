@@ -24,8 +24,6 @@ module LibertyBuildpack::Jre
   describe IBMJdk do
     include_context 'component_helper'
 
-    CURRENT_SERVICE_RELEASE = '1.7.0'.freeze
-
     let(:application_cache) { double('ApplicationCache') }
 
     before do | example |
@@ -36,7 +34,7 @@ module LibertyBuildpack::Jre
       if find_item
         token_version = example.metadata[:service_release]
 
-        ibmjdk_config = [LibertyBuildpack::Util::TokenizedVersion.new(token_version), uri, 'spec/fixtures/license.html']
+        ibmjdk_config = [LibertyBuildpack::Util::TokenizedVersion.new(token_version), { 'uri' => uri, 'license' => 'spec/fixtures/license.html' }]
         LibertyBuildpack::Repository::ConfiguredItem.stub(:find_item).and_return(ibmjdk_config)
       else
         LibertyBuildpack::Repository::ConfiguredItem.stub(:find_item).and_raise(example.metadata[:raise_error_message])
@@ -120,8 +118,22 @@ module LibertyBuildpack::Jre
           expect { compiled }.to output(/Avoid Trouble/).to_stdout
         end
 
+        it 'should fail when the license id is not provided', app_dir: '', license_ids: {} do
+          expect { compiled }.to raise_error
+        end
+
         it 'should fail when the license ids do not match', app_dir: '', license_ids: { 'IBM_JVM_LICENSE' => 'Incorrect' } do
           expect { compiled }.to raise_error
+        end
+
+        it 'should not fail when the license url is not provided', app_dir: '', license_ids: {}, cache_fixture: 'stub-ibm-java.tar.gz' do
+          ibmjdk_config = [LibertyBuildpack::Util::TokenizedVersion.new(service_release), { 'uri' => uri }]
+          LibertyBuildpack::Repository::ConfiguredItem.stub(:find_item).and_return(ibmjdk_config)
+
+          compiled
+
+          java = File.join(app_dir, '.java', 'jre', 'bin', 'java')
+          expect(File.exists?(java)).to eq(true)
         end
 
         it 'places the killjava script (with appropriately substituted content) in the diagnostics directory', cache_fixture: 'stub-ibm-java.bin' do
@@ -145,60 +157,50 @@ module LibertyBuildpack::Jre
 
         it 'should add default dump options that output data to the common dumps directory, if enabled' do
           expect(released).to include('-Xdump:none',
+                                      '-Xshareclasses:none',
                                       '-Xdump:heap:defaults:file=./../dumps/heapdump.%Y%m%d.%H%M%S.%pid.%seq.phd',
                                       '-Xdump:java:defaults:file=./../dumps/javacore.%Y%m%d.%H%M%S.%pid.%seq.txt',
                                       '-Xdump:snap:defaults:file=./../dumps/Snap.%Y%m%d.%H%M%S.%pid.%seq.trc',
                                       '-Xdump:heap+java+snap:events=user')
         end
 
-        it 'should add extra memory options when a memory limit is set' do
+        it 'should add extra memory options when 512m memory limit is set' do
           ENV['MEMORY_LIMIT'] = '512m'
 
           expect(released).to include('-Xtune:virtualized')
           expect(released).to include('-Xmx384M')
         end
 
-        it 'should provide troubleshooting info for JVM shutdowns' do
+        it 'should add extra memory options when 512m memory limit is set with 50% ratio', configuration: { 'heap_size_ratio' => 0.50 } do
           ENV['MEMORY_LIMIT'] = '512m'
 
+          expect(released).to include('-Xtune:virtualized')
+          expect(released).to include('-Xmx256M')
+        end
+
+        it 'should add extra memory options when 1024m memory limit is set' do
+          ENV['MEMORY_LIMIT'] = '1024m'
+
+          expect(released).to include('-Xtune:virtualized')
+          expect(released).to include('-Xmx768M')
+        end
+
+        it 'should add extra memory options when 1024m memory limit is set with 12.% ratio', configuration: { 'heap_size_ratio' => 0.125 }  do
+          ENV['MEMORY_LIMIT'] = '1024m'
+
+          expect(released).to include('-Xtune:virtualized')
+          expect(released).to include('-Xmx128M')
+        end
+
+        it 'should provide troubleshooting info for JVM shutdowns' do
           expect(released).to include("-Xdump:tool:events=systhrow,filter=java/lang/OutOfMemoryError,request=serial+exclusive,exec=./#{LibertyBuildpack::Diagnostics::DIAGNOSTICS_DIRECTORY}/#{IBMJdk::KILLJAVA_FILE_NAME}")
         end
       end # end of release shared tests
 
     end # end of shared tests for IBMJDK v7 release
 
-    context 'IBMJDK Service Release 1.7.0' do
-      it_behaves_like 'IBMJDK v7', '1.7.0'
-
-      if CURRENT_SERVICE_RELEASE == '1.7.0'
-        describe 'release',
-                 java_home: '',
-                 java_opts: [],
-                 configuration: {},
-                 license_ids: { 'IBM_JVM_LICENSE' => '1234-ABCD' },
-                 service_release: '1.7.0' do
-
-          # context is provided by component_helper, its default values are provided by 'describe' metadata, and
-          # customized through test's metadata
-          subject(:java_opts) { IBMJdk.new(context).release }
-
-          it 'should used -Xnocompressedrefs when the memory limit is less than 256m' do
-            ENV['MEMORY_LIMIT'] = '64m'
-
-            expect(java_opts).to include('-Xtune:virtualized')
-            expect(java_opts).to include('-Xmx48M')
-            expect(java_opts).to include('-Xnocompressedrefs')
-          end
-
-          it 'should add memory options to java_opts' do
-            ENV['MEMORY_LIMIT'] = nil
-
-            expect(java_opts).to include('-Xnocompressedrefs')
-            expect(java_opts).to include('-Xtune:virtualized')
-          end
-        end # end release
-      end
-
+    context 'IBMJDK Service Release 1.7.1' do
+      it_behaves_like 'IBMJDK v7', '1.7.1'
     end
 
   end

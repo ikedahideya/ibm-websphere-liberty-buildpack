@@ -26,6 +26,7 @@ require 'liberty_buildpack/util/license_management'
 require 'liberty_buildpack/jre/memory/memory_limit'
 require 'liberty_buildpack/jre/memory/memory_size'
 require 'pathname'
+require 'tempfile'
 
 module LibertyBuildpack::Jre
 
@@ -101,6 +102,7 @@ module LibertyBuildpack::Jre
     def release
       @java_opts.concat memory(@configuration)
       @java_opts.concat default_dump_opts
+      @java_opts << '-Xshareclasses:none'
       @java_opts << "-Xdump:tool:events=systhrow,filter=java/lang/OutOfMemoryError,request=serial+exclusive,exec=#{@common_paths.diagnostics_directory}/#{KILLJAVA_FILE_NAME}"
     end
 
@@ -128,15 +130,14 @@ module LibertyBuildpack::Jre
       FileUtils.mkdir_p(java_home)
 
       if File.basename(file.path).end_with?('.bin.cached', '.bin')
-          response_file = File.new(File.join(File.dirname(file.path), 'response.properties'), 'w')
+          response_file = Tempfile.new('response.properties')
           response_file.puts('INSTALLER_UI=silent')
           response_file.puts('LICENSE_ACCEPTED=TRUE')
           response_file.puts("USER_INSTALL_DIR=#{java_home}")
           response_file.close
 
-          File.chmod(0755, file.path)
+          File.chmod(0755, file.path) unless File.executable?(file.path)
           system "#{file.path} -i silent -f #{response_file.path} 2>&1"
-
       else
         system "tar xzf #{file.path} -C #{java_home} --strip 1 2>&1"
       end
@@ -145,7 +146,12 @@ module LibertyBuildpack::Jre
     end
 
     def self.find_ibmjdk(configuration)
-      LibertyBuildpack::Repository::ConfiguredItem.find_item(configuration)
+      version, entry = LibertyBuildpack::Repository::ConfiguredItem.find_item(configuration)
+      if entry.is_a?(Hash)
+        return version, entry['uri'], entry['license']
+      else
+        return version, entry, nil
+      end
     rescue => e
       raise RuntimeError, "IBM JRE error: #{e.message}", e.backtrace
     end
@@ -159,29 +165,23 @@ module LibertyBuildpack::Jre
     end
 
     def memory(configuration)
+      java_memory_opts = []
+      java_memory_opts.push '-Xtune:virtualized'
+
       mem = MemoryLimit.memory_limit
       if mem.nil?
         ## if no memory option has been set by cloudfoundry, we just assume defaults
-        ## except for no compressed refs.
-        java_memory_opts = []
-        java_memory_opts.push '-Xnocompressedrefs'
-        java_memory_opts.push '-Xtune:virtualized'
-
         java_memory_opts
       else
-        java_memory_opts = []
-
-        if mem < MemorySize.new('512M')
-          java_memory_opts.push '-Xnocompressedrefs'
-        end
-
-        new_heap_size = mem * HEAP_SIZE_RATIO
-
-        java_memory_opts.push '-Xtune:virtualized'
+        new_heap_size = mem * heap_size_ratio
         java_memory_opts.push "-Xmx#{new_heap_size}"
 
         java_memory_opts
       end
+    end
+
+    def heap_size_ratio
+      @configuration['heap_size_ratio'] || HEAP_SIZE_RATIO
     end
 
     # default options for -Xdump to disable dumps while routing to the default dumps location when it is enabled by the
@@ -194,10 +194,6 @@ module LibertyBuildpack::Jre
       default_options.push "-Xdump:snap:defaults:file=#{@common_paths.dump_directory}/Snap.%Y%m%d.%H%M%S.%pid.%seq.trc"
       default_options.push '-Xdump:heap+java+snap:events=user'
       default_options
-    end
-
-    def pre_8
-      @version < LibertyBuildpack::Util::TokenizedVersion.new('1.8.0')
     end
 
     def copy_killjava_script
